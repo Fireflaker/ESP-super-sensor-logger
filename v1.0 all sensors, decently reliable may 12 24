@@ -1,0 +1,1258 @@
+// use millis. No delay anywhere.
+unsigned long eventTime_read_co2 = 6000;
+unsigned long eventTime_read_heated_sensors = 15000;  //must be bigger than heatingDuration
+unsigned long eventTime_read_fast_sensors = 1000;
+
+
+unsigned long eventTime_push_serial_usb = 5000;
+unsigned long eventTime_push_serial_lora = 10000;
+unsigned long eventTime_push_thingSpeak = 15000;
+
+
+unsigned long eventTime_watchDog = 300000;  // 5 minutes
+unsigned long previousTime_watchDog = 0;
+
+
+unsigned long previousTime_read_co2 = 0;
+unsigned long previouTime_read_heated_sensors = 0;
+unsigned long previousTime_read_fast_sensors = 0;
+
+
+unsigned long previousTime_push_serial_usb = 0;
+unsigned long previousTime_push_serial_lora = 0;
+unsigned long previousTime_push_thingSpeak = 0;
+
+
+const unsigned long heatingDuration = 15000;  // 15 seconds always on
+unsigned long heatingStartTime = 0;
+int8_t heatingProgress = 0;  // states. 0 not heating, 1 heating, 10 ready to read.
+
+
+unsigned long previousUpdateMicros = 0;
+
+
+// END millis
+
+
+// init telemetry values
+
+
+float weight1 = 888;  // Weight from the first HX711 module
+float weight2 = 888;  // Weight from the second HX711 module
+
+
+float SCDt = 888;
+float SCDh = 888;
+int16_t SCDco2 = 888;
+
+
+float SHTt = 888;
+float SHTh = 888;
+
+
+float BMPt = 888;
+float BMPpres = 888;
+
+
+float AHTt = 888;
+float AHTh = 888;
+
+
+int16_t ADSgas = 888;
+int16_t ADSammonia = 888;
+int16_t ADSalc = 888;
+int16_t ADSlight = 888;
+
+
+int16_t rssi = 888;
+
+
+int watchdogHit = 0;
+long counter = 0;  // 19 digits int
+// END init telemetry
+
+
+// Global variable declarations load cells
+float offset1 = 0;
+float scaleval1 = 1;
+float offset2 = 0;
+float scaleval2 = 1;
+
+
+// Global variables for HX711 power management
+bool hx711_power_on = false;
+unsigned long hx711_power_on_time = 0;
+const unsigned long HX711_WARMUP_TIME = 100;  // Warmup time in milliseconds
+
+
+float adcValueMotion = 888;
+float adcValueBattery = 888;
+
+
+// Define the ADC pins
+const int adcPinMotion = 2;
+const int adcPinBattery = 1;
+
+
+#include "esp_wifi.h"
+
+
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_AHTX0.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_SHT4x.h>
+#include <HX711.h>
+#include "SparkFun_SCD4x_Arduino_Library.h"
+
+
+#include <Preferences.h>  //EEPROM TO SAVE VALUES
+Preferences preferences;
+
+
+#include "WiFi.h"
+#include <WiFiServer.h>
+WiFiServer server(23);  // Use Telnet port for simplicity
+
+
+#include "ThingSpeak.h"  // always include thingspeak header file after other header files and custom macros
+
+
+#define AHT20_ADDR 0x38   // AHT20 I2C address
+#define BMP280_ADDR 0x76  // BMP280 I2C address
+#define SHT40_ADDR 0x44   // SHT40 I2C address
+
+
+#define DOUT_PIN 6          // HX711 data pin
+#define SCK_PIN 7           // HX711 clock pin
+#define ADS1115_ADDR 0x48   // ADS1115 I2C address
+#define MOS_PIN_GAS 47      // pins mosfet n low draw
+#define MOS_PIN_AMMONIA 48  // pins mosfet n high draw
+#define MOS_PIN_ALC 38      // pins mosfet n mid draw
+
+
+// Define pin numbers for SDA and SCL
+#define SDA_PIN 8
+#define SCL_PIN 9
+
+
+#include <Adafruit_NeoPixel.h>
+
+
+#define NEOPIXEL_PIN 48
+#define NEOPIXEL_NUM 1
+
+
+Adafruit_NeoPixel pixel(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+
+#include <ld2410.h>
+// LD2410 radar module definitions
+#define RADAR_SERIAL Serial1
+#define RADAR_RX_PIN 12
+#define RADAR_TX_PIN 13
+
+
+ld2410 radar;
+uint32_t lastReading = 0;
+bool radarConnected = false;
+
+
+HX711 myscale;
+SCD4x Co2Sensor;
+Adafruit_AHTX0 aht20;
+Adafruit_BMP280 bmp280;
+Adafruit_SHT4x sht4;
+Adafruit_ADS1115 ads;
+
+
+// WiFi and thingspeak settings
+const char *ssid = "pards";
+const char *pass = "";
+
+
+int keyIndex = 0;                          // your network key Index number (needed only for WEP)
+unsigned long myChannelNumber1 = 2544872;  // change the later messages too
+const char *myWriteAPIKey1 = "EPZLXBB0D08PVWP1";
+const char *myReadAPIKey1 = "RGT2DG6O7DZBSE2X";
+
+
+unsigned long myChannelNumber2 = 2544874;  // change the later messages too
+const char *myWriteAPIKey2 = "CCHWQ3JTLE1TE2D0";
+const char *myReadAPIKey2 = "POYNC2SE1TF9M6IB";
+
+
+WiFiClient client;
+
+
+// Initialize our values
+String myStatus1 = "Main defult";
+String myStatus2 = "Sub defult";
+
+
+void setPixelColor(uint32_t color) {
+  pixel.setPixelColor(0, color);
+  pixel.show();
+}
+
+
+void indicateReading() {
+  setPixelColor(pixel.Color(0, 100, 0));  // Green
+}
+
+
+void indicateTransmitting() {
+  setPixelColor(pixel.Color(0, 0, 120));  // Blue
+}
+
+
+void indicateError() {
+  setPixelColor(pixel.Color(255, 0, 0));  // Red
+}
+
+
+void checkSensorData() {
+  if (SCDt == 888 || SCDh == 888 || SCDco2 == 888 || SHTt == 888 || SHTh == 888 || BMPt == 888 || BMPpres == 888 || AHTt == 888 || AHTh == 888 || ADSgas == 888 || ADSammonia == 888 || ADSalc == 888 || ADSlight == 888) {
+    indicateError();
+  } else {
+    setPixelColor(pixel.Color(0, 0, 0));  // Off
+  }
+}
+
+
+
+
+void connectToWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("<WARN> Attempting to connect to WiFi...");
+    WiFi.begin(ssid, pass);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("<INFO> Connected to WiFi.");
+      Serial.print("<INFO> IP address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("<WARN> Failed to connect to WiFi.");
+    }
+  }
+}
+
+
+// void adjustThingspeakPushFrequency() {
+//   static bool initialRead = true;   // This flag ensures that the initial weights are recorded only once
+//   static float initialWeight1 = 0;  // To store the initial weight1
+//   static float initialWeight2 = 0;  // To store the initial weight2
+//   static long hf = 0;
+//   static long lf = 0;
+//   static long gap = 2000;
+
+
+//   // Open Preferences with "calibration" namespace in read-write mode
+//   preferences.begin("calibration", false);
+
+
+//   if (initialRead) {
+//     // Save the current weight values as initial values in EEPROM
+//     initialWeight1 = weight1;  // Assume weight1 is the current reading from the scale
+//     initialWeight2 = weight2;  // Assume weight2 is the current reading from the scale
+
+
+//     preferences.putFloat("initialWeight1", initialWeight1);
+//     preferences.putFloat("initialWeight2", initialWeight2);
+
+
+//     initialRead = false;  // Set the flag to false after the initial setup
+//     Serial.println("Initial weight values saved.");
+//   } else {
+//     // Load the saved initial weights
+//     initialWeight1 = preferences.getFloat("initialWeight1", 0);
+//     initialWeight2 = preferences.getFloat("initialWeight2", 0);
+
+
+//     // Calculate the difference from the initial weights
+//     float diffWeight1 = fabs(weight1 - initialWeight1);
+//     float diffWeight2 = fabs(weight2 - initialWeight2);
+
+
+//     // Check if the weight change exceeds 100 grams
+//     if (diffWeight1 > gap || diffWeight2 > gap) {
+//       eventTime_push_thingSpeak = 5000;  // Set push frequency to every 5000 ms (5 seconds)
+//       Serial.println("Significant weight change detected, setting ThingSpeak push frequency to 5 seconds.");
+//       hf++;
+//       lf = lf * 0.8;  //push to zero
+//     } else {
+//       eventTime_push_thingSpeak = 30000;  // Set push frequency to every 30000 ms (30 seconds)
+//       Serial.println("Weight change within normal range, setting ThingSpeak push frequency to 30 seconds.");
+//       hf = hf * 0.8;
+//       lf++;
+//     }
+
+
+//     if (hf > eventTime_read_fast_sensors * 20 * 120) {  //if a guys sitting for 120minutes plus, probably wrong
+//       Serial.println("if a guys sitting for 120minutes plus, probably wrong. Re Cal baseline weight and gap*1.5");
+//       initialRead = true;
+//       gap = gap * 1.5;
+//     }
+//     if (lf > eventTime_read_fast_sensors * 20 * 60 * 24) {  //if no trigger in 24 hours, increase sensitivity
+//       Serial.println("if no trigger in 24 hours, increase sensitivity. gap*0.7");
+//       initialRead = true;
+//       gap = gap * 0.7;
+//     }
+//   }
+
+
+//   // Close the Preferences
+//   preferences.end();
+// }
+
+
+void loadCalibration() {
+  Serial.print("Loading calibration data...");
+  preferences.begin("calibration", true);  // Open the Preferences with my-app namespace. ReadOnly is true
+  float loadedOffset1 = preferences.getFloat("offset1", 0);
+  float loadedScale1 = preferences.getFloat("scale1", 1);
+  preferences.end();  // Close the Preferences
+
+
+  // Check if calibration data loaded successfully
+  if (isnan(loadedOffset1) || isnan(loadedScale1)) {
+    Serial.println(" #ERROR# Calibration data not found or corrupted. Using default values.");
+    // Set default values or take appropriate action
+    loadedOffset1 = 0;
+    loadedScale1 = 1;
+  } else {
+    Serial.println(" Calibration data loaded successfully.");
+  }
+
+
+  // Print loaded values
+  Serial.println("Loaded Calibration Data:");
+  Serial.print("Offset 1: ");
+  Serial.println(loadedOffset1);
+  Serial.print("Scale 1: ");
+  Serial.println(loadedScale1, 6);  // Print with precision for float
+
+
+  // Set loaded calibration data to the sensors
+  myscale.set_offset(loadedOffset1);
+  myscale.set_scale(loadedScale1);
+}
+
+
+// void calibrate() {
+
+
+//   Serial.println("\n\nCALIBRATION\n===========");
+//   Serial.println("remove all weight from the swing stool");
+//   while (Serial.available()) Serial.read();  // Flush Serial input
+
+
+//   Serial.println("and press enter\n");
+//   while (Serial.available() == 0)
+//     ;  // Wait for user to press enter
+
+
+//   // Prompt user for reset to factory defaults before calibration
+//   Serial.println("Do you want to reset all calibration to factory defaults? (yes/no)");
+//   String inputReset = "";
+//   while (true) {
+//     if (Serial.available()) {
+//       char c = Serial.read();
+//       if (c == '\n') {
+//         if (inputReset.length() > 0) {
+//           inputReset.trim();  // Remove any whitespace
+//           if (inputReset.equalsIgnoreCase("yes")) {
+//             // Reset all calibration settings to factory defaults
+//             myscale.set_offset(0);
+//             myscale.set_scale(1);
+//             myscale2.set_offset(0);
+//             myscale2.set_scale(1);
+//             Serial.println("Calibration settings have been reset to factory defaults.");
+//             return;  // Exit the function after resetting
+//           }
+//           break;  // Exit loop after processing input
+//         }
+//       } else {
+//         inputReset += c;  // Append the read character to the input string
+//       }
+//     }
+//   }
+
+
+//   // Proceed with calibration if not reset to defaults
+//   Serial.println("Determine zero weight offset for the first scale");
+//   myscale.tare(40);  // Average 20 measurements
+//   uint32_t offset1 = myscale.get_offset();
+
+
+//   // Calibrate the second scale
+//   Serial.println("Determine zero weight offset for the second scale");
+//   myscale2.tare(40);  // Average 20 measurements
+//   uint32_t offset2 = myscale2.get_offset();
+//   Serial.println("OFFSET for scale 1: " + String(offset1));
+//   Serial.println("OFFSET for scale 2: " + String(offset2));
+
+
+
+
+
+
+
+
+//   Serial.println("place a weight on the EXACT-CENTER of the swing stool");
+//   while (Serial.available()) Serial.read();  // Flush Serial input
+
+
+
+
+
+
+
+
+//   Serial.println("enter the weight in (whole) grams and press enter");
+//   uint32_t weight = 0;
+//   while (Serial.peek() != '\n') {
+//     if (Serial.available()) {
+//       char ch = Serial.read();
+//       if (isdigit(ch)) {
+//         weight *= 10;
+//         weight += (ch - '0');
+//       }
+//     }
+//   }
+
+
+
+
+
+
+
+
+//   Serial.print("WEIGHT: ");
+//   Serial.println(weight);
+
+
+
+
+
+
+
+
+//   // Apply calibration weight to first scale
+//   myscale.calibrate_scale(weight, 50);
+//   scaleval1 = myscale.get_scale();
+
+
+
+
+
+
+
+
+//   // Apply calibration weight to second scale
+//   myscale2.calibrate_scale(weight, 50);
+//   scaleval2 = myscale2.get_scale();
+
+
+
+
+
+
+
+
+//   Serial.println("SCALE for scale 1: " + String(scaleval1, 6));
+//   Serial.println("SCALE for scale 2: " + String(scaleval2, 6));
+
+
+
+
+
+
+
+
+//   Serial.println("\nUse myscale.set_offset(" + String(offset1) + "); and myscale.set_scale(" + String(scaleval1, 6) + "); for the first scale in your setup.");
+//   Serial.println("Use myscale2.set_offset(" + String(offset2) + "); and myscale2.set_scale(" + String(scaleval2, 6) + "); for the second scale in your setup.");
+
+
+
+
+
+
+
+
+//   myscale.set_offset(offset1);
+//   myscale.set_scale(scaleval1);
+//   myscale2.set_offset(offset2);
+//   myscale2.set_scale(scaleval2);
+
+
+
+
+
+
+
+
+//   Serial.println("CALIBRATION APPLIED but not in EEPROM yet");
+//   Serial.println("\n\n");
+
+
+
+
+
+
+
+
+//   // After calibration steps and applying calibration values
+//   Serial.println("Do you want to save these calibration settings? (yes/no)");
+//   String saveInput = "";
+//   while (true) {
+//     if (Serial.available()) {
+//       char c = Serial.read();
+//       if (c == '\n') {
+//         if (saveInput.length() > 0) {  // Check if the input string is not empty
+//           saveInput.trim();            // Remove any whitespace
+//           if (saveInput.equalsIgnoreCase("yes")) {
+//             saveCalibration();  // Call your saveCalibration function
+//             Serial.println("Calibration settings saved.");
+//           } else {
+//             Serial.println("Calibration settings not saved.");
+//           }
+//           break;  // Exit the loop after processing input
+//         }
+//       } else {
+//         saveInput += c;  // Append the read character to the input string
+//       }
+//     }
+//   }
+// }  //end calibrte
+
+
+
+
+void saveCalibration() {
+  preferences.begin("calibration", false);  // not readonly
+  preferences.putFloat("offset1", offset1);
+  preferences.putFloat("scale1", scaleval1);
+  preferences.putFloat("offset2", offset2);
+  preferences.putFloat("scale2", scaleval2);
+  preferences.end();
+}
+
+
+// void handleSerialInput() {
+//   static String inputString = "";  // Holds the accumulated input
+
+
+
+
+//   while (Serial.available()) {
+//     char c = Serial.read();  // Read incoming character
+//     Serial.print(c);         // Echo the character back to Serial Monitor
+
+
+
+
+//     if (c == '\n') {
+//       // Process the complete command
+//       if (inputString.endsWith("RESET")) {
+//         Serial.println("\nReset command received. Restarting ESP...");
+//         delay(150);     // Wait a moment for the message to be sent
+//         ESP.restart();  // Reset the ESP
+//       } else if (inputString.equalsIgnoreCase("CAL")) {
+//         Serial.println("\nStarting calibration...");
+//         calibrate();
+//       }
+
+
+//       else if (inputString.startsWith("SET_SCALE1")) {
+//         float scale1 = inputString.substring(inputString.indexOf('=') + 1).toFloat();
+//         myscale.set_scale(scale1);
+//         Serial.println("Scale for HX711 #1 set to: " + String(scale1));
+//         saveCalibration();
+//       } else if (inputString.startsWith("SET_OFFSET1")) {
+//         long offset1 = inputString.substring(inputString.indexOf('=') + 1).toInt();
+//         myscale.set_offset(offset1);
+//         Serial.println("Offset for HX711 #1 set to: " + String(offset1));
+//         saveCalibration();
+//       } else if (inputString.startsWith("SET_SCALE2")) {
+//         float scale2 = inputString.substring(inputString.indexOf('=') + 1).toFloat();
+//         myscale2.set_scale(scale2);
+//         Serial.println("Scale for HX711 #2 set to: " + String(scale2));
+//         saveCalibration();
+//       } else if (inputString.startsWith("SET_OFFSET2")) {
+//         long offset2 = inputString.substring(inputString.indexOf('=') + 1).toInt();
+//         myscale2.set_offset(offset2);
+//         Serial.println("Offset for HX711 #2 set to: " + String(offset2));
+//         saveCalibration();
+//       }
+
+
+
+
+//       else {
+//         // Process timing update command
+//         int separatorIndex = inputString.indexOf('=');
+//         if (separatorIndex != -1) {  // If '=' found, process the timing update
+//           String command = inputString.substring(0, separatorIndex);
+//           unsigned long value = inputString.substring(separatorIndex + 1).toInt();
+
+
+//           // Match the command with the timing variable and update its value
+//           if (command == "eventTime_read_co2") {
+//             eventTime_read_co2 = value;
+//           } else if (command == "eventTime_read_heated_sensors") {
+//             eventTime_read_heated_sensors = value;
+//           } else if (command == "eventTime_read_fast_sensors") {
+//             eventTime_read_fast_sensors = value;
+//           } else if (command == "eventTime_push_serial_usb") {
+//             eventTime_push_serial_usb = value;
+//           } else if (command == "eventTime_push_serial_lora") {
+//             eventTime_push_serial_lora = value;
+//           } else if (command == "eventTime_push_thingSpeak") {
+//             eventTime_push_thingSpeak = value;
+//           } else if (command == "eventTime_watchDog") {
+//             eventTime_watchDog = value;
+//           }
+
+
+
+
+
+
+//           Serial.print(command);
+//           Serial.print(" updated to ");
+//           Serial.println(value);
+//         }
+//       }
+//       inputString = "";  // Clear the inputString for the next command
+//     } else {
+//       inputString += c;  // Accumulate the input
+//     }
+//   }
+// }
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////
+// WIFI//
+/////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+float mapfloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+
+// ...
+
+
+void readFastSensors() {
+  indicateReading();
+
+
+  rssi = WiFi.RSSI();
+
+
+  counter++;
+
+
+  long sum1 = 0;
+  int readings1 = 30;
+  for (int i = 0; i < readings1; i++) {
+    sum1 += analogReadMilliVolts(adcPinBattery);
+    delay(20);
+  }
+
+
+  float adcValueRaw1 = float(sum1) / readings1;
+  adcValueBattery = mapfloat(adcValueRaw1, 1168.8, 1328.1, 10.9, 13.92);
+  Serial.print("<DATA> ADC Value on GPIO 1 (Battery): ");
+  Serial.print(adcValueRaw1);
+  Serial.print(" ===== ");
+  Serial.print(adcValueBattery);
+  Serial.println("V");
+
+
+
+
+  long sum2 = 0;
+  int readings2 = 30;
+  for (int i = 0; i < readings2; i++) {
+    sum2 += analogReadMilliVolts(adcPinMotion);
+    delay(20);
+  }
+  float adcValueRaw2 = float(sum2) / readings2;
+  adcValueMotion = mapfloat(adcValueRaw2, 0.0, 4095.0, 0.0, 5.0);
+  Serial.print("<DATA> ADC Value on GPIO 2 (Motion): ");
+  Serial.print(adcValueRaw2);
+  Serial.print(" ===== ");
+  Serial.print(adcValueMotion);
+  Serial.println("V");
+
+
+  // Read AHT20 sensor data
+  sensors_event_t humidity, temp;
+  if (aht20.begin()) {
+    aht20.getEvent(&humidity, &temp);
+    AHTt = temp.temperature;
+    AHTh = humidity.relative_humidity;
+    Serial.print("<DATA> AHT20 - Temperature: ");
+    Serial.print(AHTt);
+    Serial.print(", Humidity: ");
+    Serial.print(AHTh);
+    Serial.println("%");
+  } else {
+    Serial.println("<WARN> Failed to read AHT20 sensor data.");
+  }
+
+
+  // Read BMP280 sensor data
+  if (bmp280.begin()) {
+    BMPt = bmp280.readTemperature();
+    BMPpres = bmp280.readPressure() / 100.0F;
+    Serial.print("<DATA> BMP280 - Temperature: ");
+    Serial.print(BMPt);
+    Serial.print(", Pressure: ");
+    Serial.print(BMPpres);
+    Serial.println("hPa");
+  } else {
+    Serial.println("<WARN> Failed to read BMP280 sensor data.");
+  }
+
+
+  // Read SHT4x sensor data
+  sensors_event_t humiditySHT4x, tempSHT4x;
+  if (sht4.begin()) {
+    sht4.getEvent(&humiditySHT4x, &tempSHT4x);
+    SHTt = tempSHT4x.temperature;
+    SHTh = humiditySHT4x.relative_humidity;
+    Serial.print("<DATA> SHT4x - Temperature: ");
+    Serial.print(SHTt);
+    Serial.print(", Humidity: ");
+    Serial.print(SHTh);
+    Serial.println("%");
+  } else {
+    Serial.println("<WARN> Failed to read SHT4x sensor data.");
+  }
+
+
+  // Print gas sensor values
+  Serial.print("<DATA> Gas Sensors - CO & Combustible Gas: ");
+  Serial.print(ADSgas);
+  Serial.print(", Ammonia & Sulfide: ");
+  Serial.print(ADSammonia);
+  Serial.print(", Alcohol: ");
+  Serial.println(ADSalc);
+
+
+  // Read LD2410 radar module
+  // and Set the main channel status based on the radar readings
+  myStatus1 = "";
+  if (radar.presenceDetected()) {
+    Serial.println("<DATA> Radar presenceDetected: ");
+    if (radar.stationaryTargetDetected()) {
+      myStatus1 += "Stationary target: " + String(radar.stationaryTargetDistance()) + "cm energy:" + String(radar.stationaryTargetEnergy()) + " ";
+      Serial.print("<DATA> Radar - Stationary target: ");
+      Serial.print(radar.stationaryTargetDistance());
+      Serial.print("cm, Energy: ");
+      Serial.println(radar.stationaryTargetEnergy());
+    }
+    if (radar.movingTargetDetected()) {
+      myStatus1 += "Moving target: " + String(radar.movingTargetDistance()) + "cm energy:" + String(radar.movingTargetEnergy());
+      Serial.print("<DATA> Radar - Moving target: ");
+      Serial.print(radar.movingTargetDistance());
+      Serial.print("cm, Energy: ");
+      Serial.println(radar.movingTargetEnergy());
+    }
+  } else {
+    myStatus1 = "No target";
+    Serial.println("<DATA> Radar - No target detected");
+  }
+
+
+
+  checkSensorData();
+}
+
+
+
+
+/*
+Each line of data must start with a $ and end with a ;.
+Values should be space-separated.
+*/
+void pushSerialUSB() {
+  indicateTransmitting();
+
+
+  // Capture the current time in microseconds
+  unsigned long currentUpdateMicros = micros();
+  // Calculate the duration since the last update in microseconds
+  unsigned long updateDurationMicros = currentUpdateMicros - previousUpdateMicros;
+  // Update the previousUpdateMicros for the next iteration
+  previousUpdateMicros = currentUpdateMicros;
+
+
+  // Construct the string according to the specified format
+  Serial.print("$");
+  Serial.print(SCDt, 2);
+  Serial.print(" ");
+  Serial.print(SCDh, 2);
+  Serial.print(" ");
+  Serial.print(SCDco2);
+  Serial.print(" ");
+  Serial.print(SHTt, 2);
+  Serial.print(" ");
+  Serial.print(SHTh, 2);
+  Serial.print(" ");
+  Serial.print(BMPt, 2);  // Assuming 2 decimal places for floats
+  Serial.print(" ");
+  Serial.print(BMPpres, 2);
+  Serial.print(" ");
+  Serial.print(AHTt, 2);
+  Serial.print(" ");
+  Serial.print(AHTh, 2);
+  Serial.print(" ");
+  Serial.print(ADSgas);
+  Serial.print(" ");
+  Serial.print(ADSammonia);
+  Serial.print(" ");
+  Serial.print(ADSalc);
+  Serial.print(" ");
+  Serial.print(ADSlight);
+  Serial.print(" ");
+  Serial.print(rssi);
+  Serial.print(" ");
+  Serial.print(counter);  // This prints the last value and then a newline
+  Serial.print(" ");
+  Serial.print(updateDurationMicros);  // Include the elapsed microseconds
+  Serial.println(";");
+  checkSensorData();
+}
+
+
+void pushSerialLoRa() {
+  indicateTransmitting();
+
+
+  // Your code for push_serial_lora event here
+  Serial2.print("ADS1115 - A0 CO & Combustible Gas: ");
+  Serial2.print(ADSgas);
+  Serial2.print(", A1 MQ135 ammonia & sulfide: ");
+  Serial2.print(ADSammonia);
+  Serial2.print(", A2 MQ3 alcohol: ");
+  Serial2.print(ADSalc);
+  Serial2.print(", A3 light: ");
+  Serial2.println(ADSlight);
+
+
+  Serial2.print("AHT20 - Temp: ");
+  Serial2.print(AHTt);
+  Serial2.print(", Hum: ");
+  Serial2.print(AHTh);
+  Serial2.print("%, ");
+
+
+  Serial2.print("BMP280 - Temp: ");
+  Serial2.print(BMPt);
+  Serial2.print(", Prs: ");
+  Serial2.print(BMPpres);
+  Serial2.print("hPa, ");
+
+
+  Serial2.print("SHT4x - Temp: ");
+  Serial2.print(SHTt);
+  Serial2.print(", Hum: ");
+  Serial2.print(SHTh);
+  Serial2.print("%, ");
+  checkSensorData();
+}
+
+
+void handleWatchdog() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("<WARN> Watchdog: WIFI NOT CONNECTED!");
+    Serial.print("<WARN> Watchdog Hit = ");
+    Serial.println(watchdogHit);
+
+
+    connectToWiFi();
+    watchdogHit++;
+  }
+  if (watchdogHit > 3) {
+    Serial.println("<ERROR> !!!Watchdog RESTARTING ESP!!!");
+    ESP.restart();
+  }
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////
+// WIFI//
+/////////////////////////////////////////////////////////////////////////////////
+
+
+void sendTelemetry() {
+  // MAIN:
+  //  set the fields with the values
+  ThingSpeak.setField(1, SCDt);
+  ThingSpeak.setField(2, SCDh);
+  ThingSpeak.setField(3, SCDco2);
+  ThingSpeak.setField(4, SHTt);
+  ThingSpeak.setField(5, SHTh);
+  ThingSpeak.setField(6, BMPt);
+  ThingSpeak.setField(7, BMPpres);
+  ThingSpeak.setField(8, adcValueMotion);
+
+
+  // set the status
+  ThingSpeak.setStatus(myStatus1);
+
+
+  // write to the ThingSpeak channel
+  int MainCode = ThingSpeak.writeFields(myChannelNumber1, myWriteAPIKey1);
+  if (MainCode == 200) {
+    Serial.println("Main Channel update successful.");
+  } else {
+    Serial.println("Problem updating Main channel. HTTP error code " + String(MainCode));
+    watchdogHit++;
+  }
+
+
+  // SUB:
+  //  set the fields with the values
+  ThingSpeak.setField(1, AHTt);
+  ThingSpeak.setField(2, AHTh);
+  ThingSpeak.setField(3, ADSgas);
+  ThingSpeak.setField(4, ADSammonia);
+  ThingSpeak.setField(5, ADSalc);
+  ThingSpeak.setField(6, ADSlight);
+  ThingSpeak.setField(7, counter);
+  ThingSpeak.setField(8, rssi);
+
+
+  // Set additional fields for radar data
+  if (radar.isConnected()) {
+    if (radar.presenceDetected()) {
+      if (radar.stationaryTargetDetected()) {
+        ThingSpeak.setField(7, radar.stationaryTargetDistance());
+      }
+      if (radar.movingTargetDetected()) {
+        ThingSpeak.setField(8, radar.movingTargetDistance());
+      }
+    }
+  }
+  // set the status
+  ThingSpeak.setStatus(myStatus2);
+
+
+  // write to the ThingSpeak channel
+  int SubCode = ThingSpeak.writeFields(myChannelNumber2, myWriteAPIKey2);
+  if (SubCode == 200) {
+    Serial.println("Sub Channel update successful.");
+  } else {
+    Serial.println("Problem updating Sub channel. HTTP error code " + String(SubCode));
+  }
+}
+
+
+
+
+void pushThingSpeak() {
+  indicateTransmitting();
+
+
+  Serial.println("<INFO> ThingSpeak BEFOREsendTelemetry()");
+  Serial.print("<INFO> Status Message: ");
+  Serial.println(myStatus1);
+  Serial.print("<INFO> Channel Number: ");
+  Serial.println(myChannelNumber1);
+  Serial.print("<INFO> Write API Key: ");
+  Serial.println(myWriteAPIKey1);
+
+
+  Serial.println("<INFO> ThingSpeak sendTelemetry()");
+  sendTelemetry();
+
+
+  client.stop();
+
+
+  checkSensorData();
+}
+
+
+void preheat(unsigned long currentTime2) {
+  if (heatingProgress == 0) {
+    Serial.println("<INFO> Starting heating sensors");
+    digitalWrite(MOS_PIN_AMMONIA, HIGH);
+    digitalWrite(MOS_PIN_ALC, HIGH);
+    digitalWrite(MOS_PIN_GAS, HIGH);
+    heatingProgress = 1;
+    heatingStartTime = currentTime2;
+  } else if (currentTime2 - heatingStartTime >= heatingDuration) {
+    Serial.println("<INFO> Heating sensors complete");
+    heatingProgress = 10;  // READY TO READ
+    digitalWrite(MOS_PIN_AMMONIA, LOW);
+    digitalWrite(MOS_PIN_ALC, LOW);
+    digitalWrite(MOS_PIN_GAS, LOW);
+  }
+}
+
+
+void cooldown() {
+  Serial.println("<INFO> Cooling sensors");
+  digitalWrite(MOS_PIN_AMMONIA, LOW);
+  digitalWrite(MOS_PIN_ALC, LOW);
+  digitalWrite(MOS_PIN_GAS, LOW);
+  heatingProgress = 0;
+}
+
+
+void setup() {
+  pinMode(MOS_PIN_GAS, OUTPUT);
+  pinMode(MOS_PIN_AMMONIA, OUTPUT);
+  pinMode(MOS_PIN_ALC, OUTPUT);
+
+
+  pinMode(adcPinMotion, INPUT);
+  pinMode(adcPinBattery, INPUT);
+
+
+  Serial.begin(460800);
+  Serial2.begin(115200, SERIAL_8N1, 5, 4);
+
+
+  Serial.println("<INFO> Connecting to WiFi...");
+
+
+  // Start WiFi IMPORTANT START AFTER SERIAL
+  WiFi.mode(WIFI_STA);
+  // Set custom MAC address
+  uint8_t newMac[] = { 0x02, 0xD1, 0xE2, 0xB2, 0xA0, 0x06 };
+  esp_wifi_set_mac(WIFI_IF_STA, newMac);
+
+
+  Serial.print("<INFO> WiFi.macAddress() = ");
+  Serial.println(WiFi.macAddress());
+
+
+  WiFi.begin(ssid, pass);
+
+
+  ThingSpeak.begin(client);  // Initialize ThingSpeak
+
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+
+  if (!aht20.begin()) {
+    Serial.println("<<MISSING>> Could not find AHT20 sensor!");
+  } else {
+    Serial.println("<INFO> AHT20 sensor is working.");
+  }
+
+
+  if (!bmp280.begin()) {
+    Serial.println("<<MISSING>> Could not find BMP280 sensor!");
+  } else {
+    Serial.println("<INFO> BMP280 sensor is working.");
+  }
+
+
+  if (!sht4.begin()) {
+    Serial.println("<<MISSING>> Could not find SHT4x sensor!");
+  } else {
+    Serial.println("<INFO> green led SHT4x sensor is working.");
+  }
+
+
+  if (!Co2Sensor.begin()) {
+    Serial.println(F("<<MISSING>> CO2 Sensor not detected."));
+  } else {
+    Serial.println("<INFO> CO2 sensor is working.");
+  }
+
+
+  // Initialize LD2410 radar module
+  RADAR_SERIAL.begin(256000, SERIAL_8N1, RADAR_RX_PIN, RADAR_TX_PIN);
+  delay(500);
+  Serial.print("<INFO> LD2410 radar sensor initializing: ");
+  if (radar.begin(RADAR_SERIAL)) {
+    Serial.println("OK");
+    Serial.print("<INFO> LD2410 firmware version: ");
+    Serial.print(radar.firmware_major_version);
+    Serial.print(".");
+    Serial.print(radar.firmware_minor_version);
+    Serial.print(".");
+    Serial.println(radar.firmware_bugfix_version, HEX);
+    radarConnected = true;
+  } else {
+    Serial.println("<<MISSING>> 24Ghz Radar not connected");
+  }
+
+
+  ads.begin(ADS1115_ADDR);
+
+
+  // Configure ADC resolution
+  analogReadResolution(12);  // Set the resolution to 12 bits
+  analogSetAttenuation(ADC_6db);
+
+
+  // Initialize ADC on the defined pins
+  pinMode(1, INPUT);
+  pinMode(2, INPUT);
+
+
+  // Connect to WiFi
+  connectToWiFi();
+
+
+  delay(500);
+  Serial.print(".");
+  delay(500);
+  Serial.print(".");
+  delay(500);
+  Serial.print(".");
+  delay(500);
+  Serial.print(".");
+
+
+  // Print the MAC address
+  Serial.print("MAC Address: ");
+  Serial.println(WiFi.macAddress());
+  Serial.println("WiFi hopefully connected - non blocking");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  // MUST NOT WRITE myStatus1 here or will KERNAL PANIC BOOT LOOP!!!!
+
+
+  // Construct the URL dynamically using the channel number and API key
+  String url = "https://api.thingspeak.com/channels/" + String(myChannelNumber1) + "/status?api_key=" + myReadAPIKey1;
+  // Print the constructed URL
+  Serial.print("Check status at: ");
+  Serial.println(url);
+
+
+  preheat(millis());
+  delay(4500);  // wait for co2 sensor first datapoint
+
+
+  // Configure ADC resolution
+  analogReadResolution(12);  // Set the resolution to 12 bits
+  analogSetAttenuation(ADC_6db);
+
+
+  Serial.print("<INFO> Setup Completed. debug msg");
+
+
+  // Set gain for HX711 module
+  //myscale.set_gain(128);
+
+
+  pixel.begin();
+  setPixelColor(pixel.Color(50, 50, 30));  // Initialize LED to off
+}
+
+
+void loop() {
+
+
+  radar.read();  // MUST RUN EVERY LOOP!!!!
+
+
+  unsigned long currentTime = millis();
+
+
+  if (currentTime - previousTime_read_co2 >= eventTime_read_co2) {
+    indicateReading();
+    if (Co2Sensor.readMeasurement()) {
+      Serial.println();
+      SCDco2 = Co2Sensor.getCO2();
+      SCDt = Co2Sensor.getTemperature();
+      SCDh = Co2Sensor.getHumidity();
+      Serial.print("<DATA> CO2(ppm): ");
+      Serial.print(SCDco2);
+      Serial.print(", Temperature(C): ");
+      Serial.print(SCDt, 1);
+      Serial.print(", Humidity(%RH): ");
+      Serial.println(SCDh, 1);
+    } else {
+      Serial.println("<WARN> Error: CO2 read too fast");
+    }
+    checkSensorData();
+    previousTime_read_co2 = currentTime;
+  }
+
+
+  if (currentTime - previouTime_read_heated_sensors >= eventTime_read_heated_sensors || heatingProgress > 0) {
+    indicateReading();
+    preheat(currentTime);
+    if (heatingProgress == 10) {
+      ADSgas = ads.readADC_SingleEnded(0);
+      ADSammonia = ads.readADC_SingleEnded(1);
+      ADSalc = ads.readADC_SingleEnded(2);
+      ADSlight = ads.readADC_SingleEnded(3);
+
+
+      Serial.print("<DATA> ADS1115 - A0 CO & Combustible Gas: ");
+      Serial.print(ADSgas);
+      Serial.print(", A1 MQ135 ammonia & sulfide: ");
+      Serial.print(ADSammonia);
+      Serial.print(", A2 MQ3 alcohol: ");
+      Serial.print(ADSalc);
+      Serial.print(", A3 light: ");
+      Serial.println(ADSlight);
+
+
+      cooldown();
+    }
+    checkSensorData();
+    previouTime_read_heated_sensors = currentTime;
+  }
+
+
+  if (currentTime - previousTime_read_fast_sensors >= eventTime_read_fast_sensors) {
+    Serial.println("<INFO> Time to read fast sensors. Reading...");
+    readFastSensors();
+    previousTime_read_fast_sensors = currentTime;
+  }
+
+
+  if (currentTime - previousTime_push_serial_usb >= eventTime_push_serial_usb) {
+    Serial.println("<INFO> Time to push serial data to USB. Pushing...");
+    pushSerialUSB();
+    previousTime_push_serial_usb = currentTime;
+  }
+
+
+  if (currentTime - previousTime_push_serial_lora >= eventTime_push_serial_lora) {
+    Serial.println("<INFO> Time to push serial data to LoRa. Pushing...");
+    pushSerialLoRa();
+    previousTime_push_serial_lora = currentTime;
+  }
+
+
+  if (currentTime - previousTime_push_thingSpeak >= eventTime_push_thingSpeak) {
+    Serial.println("<INFO> Time to push data to ThingSpeak. Pushing...");
+    pushThingSpeak();
+    previousTime_push_thingSpeak = currentTime;
+  }
+
+
+  if (currentTime - previousTime_watchDog >= eventTime_watchDog) {
+    Serial.println("<INFO> Time to handle watchdog. Handling...");
+    handleWatchdog();
+    previousTime_watchDog = currentTime;
+  }
+}
