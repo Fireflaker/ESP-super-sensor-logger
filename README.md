@@ -27,7 +27,8 @@ GPIO - Heated sensor heater control (currently not used because no low power mod
 I2C - SHT40 high humidity internal heater control
 ```
 ## Full version
-![IMG20250123214232](https://github.com/user-attachments/assets/63ddce5b-fdc2-4448-b28c-1445d5279e69)
+![IMG20250123214232](https://github.com/user-attachments/assets/63ddce5b-fdc2-4448-b28c-1445d5279e69)![IMG20250120055436](https://github.com/user-attachments/assets/59c7867b-60c6-4e25-ab0c-042e1e38f310)
+
 ## Base version (keep as many functions as you need)
 ![IMG_20240106_030131](https://github.com/user-attachments/assets/f22f863a-58d5-4c2a-b65b-897ea5b9fbe5)
 ## Thinkspeak (what it looks like online - you do not need a lcd screen)
