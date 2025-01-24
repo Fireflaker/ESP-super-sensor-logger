@@ -1,5 +1,5 @@
 # ESP-super-sensor-logger
-## jam it on. Optimized for a lomng while. Works.
+## Ongoing project. Implementing color-changing display to show data trends with moving averages. Works as is.
 
 ### TLDR: It has the same functionality as Aranet 4 but is better in every way except for the power draw (5w avg).
 
